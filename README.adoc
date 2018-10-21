@@ -287,6 +287,7 @@ To assign parameters to solver or optimizer algorithms, use the `-p
 * `random-sorting`: random the remaining constraint list.
 * `infeasibility-decr`: compute infeasibility constraint in decremental order
 * `infeasibility-incr`: compute infeasibility constraint in incremental order.
+* `lagrangian`: sort violated constraints according to the Lagrangian multiplier values.
 
 | preprocessing
 | string

@@ -80,8 +80,7 @@ struct x_type
         return 0;
     }
 
-    void clear()
-    {}
+    void clear() {}
 
     std::vector<bool> data() const noexcept
     {
@@ -812,8 +811,6 @@ struct compute_none
 template<typename floatingpointT, typename randomT>
 struct compute_reversing
 {
-    using random_type = randomT;
-
     std::vector<int> R;
 
     template<typename solverT, typename Xtype>
@@ -846,6 +843,53 @@ struct compute_reversing
     {
         solver.compute_update_row(
           x, R.crbegin(), R.crend(), kappa, delta, theta);
+
+        return solver.compute_violated_constraints(x, R);
+    }
+};
+
+template<typename floatingpointT, typename randomT>
+struct compute_lagrangian_order
+{
+    std::vector<int> R;
+
+    template<typename solverT, typename Xtype>
+    compute_lagrangian_order(solverT& s, const Xtype& x, randomT&)
+      : R(s.m)
+    {
+        s.compute_violated_constraints(x, R);
+    }
+
+    template<typename solverT, typename Xtype>
+    int push_and_run(solverT& solver,
+                     Xtype& x,
+                     floatingpointT kappa,
+                     floatingpointT delta,
+                     floatingpointT theta,
+                     floatingpointT objective_amplifier)
+    {
+        std::sort(R.begin(), R.end(), [&solver](int lhs, int rhs) {
+            return solver.pi[lhs] > solver.pi[rhs];
+        });
+
+        solver.push_and_compute_update_row(
+          x, R.cbegin(), R.cend(), kappa, delta, theta, objective_amplifier);
+
+        return solver.compute_violated_constraints(x, R);
+    }
+
+    template<typename solverT, typename Xtype>
+    int run(solverT& solver,
+            Xtype& x,
+            floatingpointT kappa,
+            floatingpointT delta,
+            floatingpointT theta)
+    {
+        std::sort(R.begin(), R.end(), [&solver](int lhs, int rhs) {
+            return solver.pi[lhs] > solver.pi[rhs];
+        });
+
+        solver.compute_update_row(x, R.cbegin(), R.cend(), kappa, delta, theta);
 
         return solver.compute_violated_constraints(x, R);
     }
@@ -1234,8 +1278,11 @@ using constraint_sel = typename std::conditional<
       typename std::conditional<
         o == 3,
         compute_infeasibility<Float, Random, compute_infeasibility_decr>,
-        compute_infeasibility<Float, Random, compute_infeasibility_decr>>::
-        type>::type>::type>::type;
+        typename std::conditional<
+          o == 4,
+          compute_infeasibility<Float, Random, compute_infeasibility_incr>,
+          compute_lagrangian_order<Float, Random>>::type>::type>::type>::type>::
+  type;
 
 template<int f>
 using float_sel = typename std::conditional<
