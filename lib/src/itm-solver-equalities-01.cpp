@@ -125,6 +125,20 @@ struct solver_equalities_01coeff
     }
 
     template<typename Xtype>
+    bool is_valid_constraint(int k, const Xtype& x) const
+    {
+        typename sparse_matrix<int>::const_row_iterator it, et;
+
+        std::tie(it, et) = ap.row(k);
+        int v = 0;
+
+        for (; it != et; ++it)
+            v += x[it->column];
+
+        return b[k] == v;
+    }
+
+    template<typename Xtype>
     int compute_violated_constraints(const Xtype& x,
                                      std::vector<int>& container) const
     {
@@ -186,27 +200,25 @@ struct solver_equalities_01coeff
             Float sum_a_pi = 0;
             Float sum_a_p = 0;
 
-            sparse_matrix<int>::const_col_iterator ht, hend;
-            std::tie(ht, hend) = ap.column(begin->column);
+            auto ht = ap.column(begin->column);
 
-            for (; ht != hend; ++ht) {
-                sum_a_pi += pi[ht->row];
-                sum_a_p += P[ht->value];
+            for (; std::get<0>(ht) != std::get<1>(ht); ++std::get<0>(ht)) {
+                sum_a_pi += pi[std::get<0>(ht)->row];
+                sum_a_p += P[std::get<0>(ht)->value];
             }
 
             R[r_size].id = r_size;
             R[r_size].value = c[begin->column] - sum_a_pi - sum_a_p;
+
             ++r_size;
         }
 
         return r_size;
     }
 
-    int select_variables_equality(const int r_size, int bk)
+    int select_variables(const int r_size, int bk)
     {
-        bk = std::min(bk, r_size);
-
-        return bk - 1;
+        return std::min(bk, r_size) - 1;
     }
 
     //
@@ -223,28 +235,36 @@ struct solver_equalities_01coeff
                           const Float kappa,
                           const Float delta) noexcept
     {
+        constexpr Float one{ 1 };
+        constexpr Float two{ 2 };
+        constexpr Float middle{ (two + one) / two };
+
+        auto d = delta;
+
         if (selected < 0) {
+            pi[k] += R[0].value / two;
+            d += (kappa / (one - kappa)) * (R[0].value / two);
+
             for (int i = 0; i != r_size; ++i) {
                 auto var = it + R[i].id;
 
                 x.set(var->column, false);
-                P[var->value] -= delta;
+                P[var->value] -= d;
             }
         } else if (selected + 1 >= r_size) {
-            pi[k] += R[selected].value;
+            pi[k] += R[selected].value * middle;
+            d += (kappa / (one - kappa)) * (R[selected].value * middle);
 
             for (int i = 0; i != r_size; ++i) {
                 auto var = it + R[i].id;
 
                 x.set(var->column, true);
-                P[var->value] += delta;
+                P[var->value] += d;
             }
         } else {
-            pi[k] += ((R[selected].value + R[selected + 1].value) /
-                      static_cast<Float>(2.0));
-
-            Float d = delta + ((kappa / (static_cast<Float>(1.0) - kappa)) *
-                               (R[selected + 1].value - R[selected].value));
+            pi[k] += ((R[selected].value + R[selected + 1].value) / two);
+            d += (kappa / (one - kappa)) *
+                 (R[selected + 1].value - R[selected].value);
 
             int i = 0;
             for (; i <= selected; ++i) {
@@ -261,6 +281,8 @@ struct solver_equalities_01coeff
                 P[var->value] -= d;
             }
         }
+
+        bx_expects(is_valid_constraint(k, x));
     }
 
     template<typename Xtype, typename Iterator>
@@ -275,19 +297,25 @@ struct solver_equalities_01coeff
         for (; first != last; ++first) {
             auto k = constraint(first);
 
-            sparse_matrix<int>::row_iterator it, et;
-            std::tie(it, et) = ap.row(k);
+            const auto it = ap.row(k);
+            decrease_preference(std::get<0>(it), std::get<1>(it), theta);
 
-            decrease_preference(it, et, theta);
-            const int r_size = compute_reduced_costs(it, et);
+            const auto r_size =
+              compute_reduced_costs(std::get<0>(it), std::get<1>(it));
 
-            if (objective_amplifier)
-                for (int i = 0; i != r_size; ++i)
-                    R[i].value += objective_amplifier * c[R[i].id];
+            //
+            // Before sort and select variables, we apply the push method: for
+            // each reduces cost, we had the cost multiply with an objective
+            // amplifier.
+            //
+
+            for (int i = 0; i != r_size; ++i)
+                R[i].value += objective_amplifier * c[R[i].id];
 
             calculator_sort(R.get(), R.get() + r_size, rng, Mode());
-            int selected = select_variables_equality(r_size, b[k]);
-            affect_variables(x, it, k, selected, r_size, kappa, delta);
+            int selected = select_variables(r_size, b[k]);
+            affect_variables(
+              x, std::get<0>(it), k, selected, r_size, kappa, delta);
         }
     }
 
@@ -302,14 +330,16 @@ struct solver_equalities_01coeff
         for (; first != last; ++first) {
             auto k = constraint(first);
 
-            sparse_matrix<int>::row_iterator it, et;
-            std::tie(it, et) = ap.row(k);
+            const auto it = ap.row(k);
+            decrease_preference(std::get<0>(it), std::get<1>(it), theta);
 
-            decrease_preference(it, et, theta);
-            const int r_size = compute_reduced_costs(it, et);
+            const auto r_size =
+              compute_reduced_costs(std::get<0>(it), std::get<1>(it));
+
             calculator_sort(R.get(), R.get() + r_size, rng, Mode());
-            int selected = select_variables_equality(r_size, b[k]);
-            affect_variables(x, it, k, selected, r_size, kappa, delta);
+            int selected = select_variables(r_size, b[k]);
+            affect_variables(
+              x, std::get<0>(it), k, selected, r_size, kappa, delta);
         }
     }
 };
@@ -336,35 +366,40 @@ select_order(const context_ptr& ctx, const problem& pb, bool is_optimization)
     const auto c = static_cast<int>(ctx->parameters.order);
 
     if (c == 0)
-        return solve_or_optimize<solver_equalities_01coeff<Float, Mode, Random>,
-                                 Float,
-                                 Mode,
-                                 constraint_sel<Float, Random, 0>,
-                                 Random>(ctx, pb, is_optimization);
+        return solve_or_optimize<
+          solver_equalities_01coeff<Float, Mode, Random>,
+          Float,
+          Mode,
+          constraint_sel<Float, Random, 0>,
+          Random>(ctx, pb, is_optimization);
     else if (c == 1)
-        return solve_or_optimize<solver_equalities_01coeff<Float, Mode, Random>,
-                                 Float,
-                                 Mode,
-                                 constraint_sel<Float, Random, 1>,
-                                 Random>(ctx, pb, is_optimization);
+        return solve_or_optimize<
+          solver_equalities_01coeff<Float, Mode, Random>,
+          Float,
+          Mode,
+          constraint_sel<Float, Random, 1>,
+          Random>(ctx, pb, is_optimization);
     else if (c == 2)
-        return solve_or_optimize<solver_equalities_01coeff<Float, Mode, Random>,
-                                 Float,
-                                 Mode,
-                                 constraint_sel<Float, Random, 2>,
-                                 Random>(ctx, pb, is_optimization);
+        return solve_or_optimize<
+          solver_equalities_01coeff<Float, Mode, Random>,
+          Float,
+          Mode,
+          constraint_sel<Float, Random, 2>,
+          Random>(ctx, pb, is_optimization);
     else if (c == 3)
-        return solve_or_optimize<solver_equalities_01coeff<Float, Mode, Random>,
-                                 Float,
-                                 Mode,
-                                 constraint_sel<Float, Random, 3>,
-                                 Random>(ctx, pb, is_optimization);
+        return solve_or_optimize<
+          solver_equalities_01coeff<Float, Mode, Random>,
+          Float,
+          Mode,
+          constraint_sel<Float, Random, 3>,
+          Random>(ctx, pb, is_optimization);
     else
-        return solve_or_optimize<solver_equalities_01coeff<Float, Mode, Random>,
-                                 Float,
-                                 Mode,
-                                 constraint_sel<Float, Random, 4>,
-                                 Random>(ctx, pb, is_optimization);
+        return solve_or_optimize<
+          solver_equalities_01coeff<Float, Mode, Random>,
+          Float,
+          Mode,
+          constraint_sel<Float, Random, 4>,
+          Random>(ctx, pb, is_optimization);
 }
 
 template<typename Float, typename Mode>
@@ -381,8 +416,9 @@ select_mode(const context_ptr& ctx, const problem& pb, bool is_optimization)
 {
     const auto m = static_cast<int>(pb.type);
 
-    return m == 0 ? select_random<Float, mode_sel<0>>(ctx, pb, is_optimization)
-                  : select_random<Float, mode_sel<1>>(ctx, pb, is_optimization);
+    return m == 0
+             ? select_random<Float, mode_sel<0>>(ctx, pb, is_optimization)
+             : select_random<Float, mode_sel<1>>(ctx, pb, is_optimization);
 }
 
 static result
